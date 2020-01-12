@@ -75,22 +75,6 @@ public:
 	static const Dest from_v8(v8::Isolate* dummy, v8::Local<v8::Value> value) {
 		return static_cast<Dest>( v8::Local<Source>::Cast( value )->Value() );
 	}
-	// v8::Local<v8::Hoge> ‚ğ <Dest=double> ‚É‚·‚é
-	class object : public v8::Object {
-	public:
-		object(const v8::Object& parent) : v8::Object(parent) {}
-		void* get() { return this->GetAlignedPointerFromInternalField(0); }
-	};
-	// v8::Local<v8::FunctionTemplate> ‚ğ–³—‚â‚è v8easy::callback ‚É‚·‚é
-	template<>
-	static const callback from_v8<v8easy::callback, v8::Number>(v8::Isolate* isolate, v8::Local<v8::Value> value) {
-//		auto ft = v8::Local<v8::FunctionTemplate>::Cast(value);
-		auto ft = *reinterpret_cast<v8::Local<v8::FunctionTemplate>*>(const_cast<v8::Local<v8::Value>*>(&value));
-		auto f = ft->GetFunction( v8::Isolate::GetCurrent()->GetCurrentContext() ).ToLocalChecked();
-		auto o = (*f)->ToObject( v8::Isolate::GetCurrent() );
-		object obj(**o);
-		return (callback)obj.get();
-	}
 	// v8::Local<v8::BigInt> ‚ğ int64_t ‚É‚·‚é
 	template<>
 	static const int64_t from_v8(v8::Isolate* isolate, v8::Local<v8::Value> value) {

@@ -79,15 +79,6 @@ int main(int argc, char* argv[]) {
 		enumNest(args.get(0), 1);
 	});
 
-	v8easy::value any[] = { true, 123, 3.14, 9223372036854775807, 'c', "string", };
-	js.set("func_name", [](v8easy::argument& args) {
-		v8easy::value
-			arg1 = args.get<int>(0),
-			arg2 = args.get<int>(1);
-		args.result(arg1.get<int>() + arg2.get<int>());
-	});
-	std::cout << js.run("func_name( 123, 456 );") << std::endl;
-
 	std::cout << "welcome v8 shell ver." << js.run("version();") << std::endl << ">";
 	
 	std::string source, line;
