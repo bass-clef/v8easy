@@ -1,18 +1,31 @@
 #pragma once
 
-#include <any>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <string>
-#include <vector>
 
 #include <libplatform/libplatform.h>
 #include <v8.h>
 
-#pragma comment(lib, "v8.dll.lib")
-#pragma comment(lib, "v8_libbase.dll.lib")
-#pragma comment(lib, "v8_libplatform.dll.lib")
+#ifdef _WIN32
+	// Windows
+	#pragma comment(lib, "v8.dll.lib")
+	#pragma comment(lib, "v8_libbase.dll.lib")
+	#pragma comment(lib, "v8_libplatform.dll.lib")
+	#ifdef _WIN64
+		// 64bit
+	#else
+		// 32bit
+	#endif
+#else
+	// Linux
+	#ifdef __x86_64__
+		// 64bit
+	#else
+		// 32bit
+	#endif
+#endif
 
 class v8easy {
 public:
@@ -74,6 +87,22 @@ public:
 	template<class Dest = double, class Source = v8::Number>
 	static const Dest from_v8(v8::Isolate* dummy, v8::Local<v8::Value> value) {
 		return static_cast<Dest>( v8::Local<Source>::Cast( value )->Value() );
+	}
+	// v8::Local<v8::Hoge> を <Dest=double> にする
+	class object : public v8::Object {
+	public:
+		object(const v8::Object& parent) : v8::Object(parent) {}
+		void* get() { return this->GetAlignedPointerFromInternalField(0); }
+	};
+	// v8::Local<v8::FunctionTemplate> を無理やり v8easy::callback にする
+	template<>
+	static const callback from_v8<v8easy::callback, v8::Number>(v8::Isolate* isolate, v8::Local<v8::Value> value) {
+//		auto ft = v8::Local<v8::FunctionTemplate>::Cast(value);
+		auto ft = *reinterpret_cast<v8::Local<v8::FunctionTemplate>*>(const_cast<v8::Local<v8::Value>*>(&value));
+		auto f = ft->GetFunction( v8::Isolate::GetCurrent()->GetCurrentContext() ).ToLocalChecked();
+		auto o = (*f)->ToObject( v8::Isolate::GetCurrent() );
+		object obj(**o);
+		return (callback)obj.get();
 	}
 	// v8::Local<v8::BigInt> を int64_t にする
 	template<>
@@ -268,21 +297,102 @@ private:
 	scopes* global_scopes;
 
 public:
-	v8easy(char* argv[]);
-	~v8easy();
+	v8easy(char* argv[]) {
+		// これらの初期化を外すと isolate の作成のところで例外が発生して怒られる
+		v8::V8::InitializeICUDefaultLocation(argv[0]);
+		v8::V8::InitializeExternalStartupData(argv[0]);
+		platform = v8::platform::NewDefaultPlatform();
+		v8::V8::InitializePlatform(platform.get());
+		v8::V8::Initialize();
+
+		// isolate という仮想環境みたいなものを作らないと js が実行できないらしい、isolate はマルチ用に複数作成できる
+		create_params.array_buffer_allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
+		global_isolate = v8::Isolate::New(create_params);
+
+		// スコープのスタックを作るとかなんとか(これは終了まで保持してないと駄目)
+		global_scopes = new scopes(global_isolate);
+
+		// この global_object (__main__みたいなもの)に色々な関数を貼り付けていく
+		global_object = v8::ObjectTemplate::New(global_isolate);
+	}
+	~v8easy() {
+		delete global_scopes;
+		global_isolate->Dispose();
+		v8::V8::Dispose();
+		v8::V8::ShutdownPlatform();
+		delete create_params.array_buffer_allocator;
+	}
 
 	// isolateが外部からほしい場合
 	operator v8::Isolate*() const { return global_isolate; }
 
 	// v8文字列 の実行
 	bool execute(v8::Isolate* isolate, v8::Local<v8::String> source, v8::Local<v8::Value> name,
-		std::string& printBuffer, bool doException = false);
+		std::string& printBuffer, bool doException = false) {
+		v8::HandleScope handleScope(isolate);
+		v8::TryCatch tryCatch(isolate);
+		v8::ScriptOrigin origin(name);
+		v8::Local<v8::Context> context(isolate->GetCurrentContext());
+		v8::Local<v8::Script> script;
+
+		if (!v8::Script::Compile(context, source, &origin).ToLocal(&script)) {
+			if (doException) {
+				// コンパイル中の例外をここで吐いたり処理したり
+			}
+			return false;
+		}
+
+		v8::Local<v8::Value> result;
+		if (!script->Run(context).ToLocal(&result)) {
+			if (doException) {
+				// 実行中の例外をここで吐いたり処理したり
+			}
+			return false;
+		}
+
+		if (!result->IsUndefined()) {
+			printBuffer = from_v8<std::string>(global_isolate, result);
+		}
+
+		return true;
+	}
 
 	// ファイルから v8文字列 の取得
-	v8::MaybeLocal<v8::String> read(v8::Isolate* isolate, const std::string& name);
+	v8::MaybeLocal<v8::String> read(v8::Isolate* isolate, const std::string& name) {
+		v8::Local<v8::String> v8_source;
+		std::ifstream ifs(name);
+		if (ifs.fail()) return v8::MaybeLocal<v8::String>();
+
+		std::string source;
+		ifs >> source;
+
+		return as<v8::String>(
+			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(name)))
+			);
+	}
 
 	// ソース の実行
-	const std::string run(const std::string& source, const std::string& fileName = "");
+	const std::string run(const std::string& source, const std::string& fileName = "") {
+		v8::Local<v8::Context> context = v8::Context::New(global_isolate, nullptr, global_object);
+		if (context.IsEmpty()) return "undefined";
+		v8::Context::Scope scope(context);
+
+		v8::Local<v8::String> v8_source;
+		v8::Local<v8::String> v8_fileName = as<v8::String>(to_v8(global_isolate, fileName));
+		if (!read(global_isolate, fileName).ToLocal(&v8_source)) {
+			v8_source = as<v8::String>(to_v8(global_isolate, source));
+			v8_fileName = as<v8::String>(to_v8(global_isolate, "unnamed"));
+		}
+
+		std::string result;
+		bool success = execute(global_isolate, v8_source, v8_fileName, result);
+		while (v8::platform::PumpMessageLoop(platform.get(), global_isolate));
+
+		if (!success) {
+			return "undefined";
+		}
+		return std::move(result);
+	}
 
 	// 変数/関数 を定義する
 	void set(const std::string& key, v8::FunctionCallback info) {

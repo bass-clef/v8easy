@@ -7,17 +7,27 @@ v8easy
 Easy to use [V8 Engine](https://v8.dev/).
 
 ## Usage
-1. clone or download this repo.
-2. source add header.
+0. v8easy is header-only. does not require build. dependency is V8 Engine.
+ - recommend version C++17 higher
+ - confirmed at Visual Studio 2019
+ - confirmed at V8-v142-x64 for Nuget
+
+1. source add header.
 
     `
         #include "v8easy.h"
     `
+- use v8easy
+    ```C++
+        int main(int argc, char* argv[]) {
+            v8easy js(argv);
+        }
+    ```
 - run
     - call `run(const std::string&)` at v8easy instance.
 - type
     - put in something.
-        ```
+        ```C++
 	    v8easy::value any[] = {
             true,
             123,
@@ -27,16 +37,16 @@ Easy to use [V8 Engine](https://v8.dev/).
             "string"
         };
         ```
-    - function `set("name", v8easy::callback)` at v8easy instance.
+    - function `set("name", v8easy::callback)`
         - definition C++ function.
-        ```
+        ```C++
         void func(v8easy::argument& args) {
             args.result("return value");
         }
         js.set("func_name", func);
         ```
         - lambda C++ function.
-        ```
+        ```C++
         js.set("func_name", [](v8easy::argument& args){
             v8easy::value
                 arg1 = args.get<int>(0),
@@ -44,13 +54,14 @@ Easy to use [V8 Engine](https://v8.dev/).
             args.result( arg1.get<int>() + arg2.get<int>() );
         });
         ```
-        - run.
-        ```
+        - call.
+        ```C++
         js.run("func_name( 123, 456 );");
         ```
+- other case sample source is at main.cpp
 
 - short source
-    ```
+    ```C++
     #include <iostream>
     #include "v8easy.h"
     int main(int argc, char* argv[]) {
