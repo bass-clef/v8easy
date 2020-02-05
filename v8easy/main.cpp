@@ -34,7 +34,7 @@ bool enumNest(v8easy::array ary, int indent) {
 }
 
 int main(int argc, char* argv[]) {
-	v8easy js(argv);
+	v8easy js(argv[0]);
 	// case o—Í
 	js.set("version", v8_version);
 	// case std::string

@@ -78,3 +78,6 @@ ___
 - [GPLv3](http://www.gnu.org/licenses/gpl-3.0.txt) 
 - [Humi@bass_clef_](https://twitter.com/bass_clef_)
 - bassclef.nico@gmail.com  
+
+## log
+2020/2/5 : replaced LF to CRLF codes. because errored Unexpected Error in JavaScript.

@@ -297,10 +297,15 @@ private:
 	scopes* global_scopes;
 
 public:
-	v8easy(char* argv[]) {
+	v8easy(char* exePath) {
+		/*
+		自分で V8 をビルドすると高速化されていないオプションを選べるけど {v8_use_external_startup_data = false}
+		そうでないので natives_blob.bin/snapshot_blob.bin があるディレクトリを指定して呼び出す必要がある
+		詳細:https://groups.google.com/forum/m/#!topic/v8-users/N4GGCkuKnfA
+		*/
+		v8::V8::InitializeICUDefaultLocation(exePath);
+		v8::V8::InitializeExternalStartupData(exePath);
 		// これらの初期化を外すと isolate の作成のところで例外が発生して怒られる
-		v8::V8::InitializeICUDefaultLocation(argv[0]);
-		v8::V8::InitializeExternalStartupData(argv[0]);
 		platform = v8::platform::NewDefaultPlatform();
 		v8::V8::InitializePlatform(platform.get());
 		v8::V8::Initialize();
@@ -326,18 +331,34 @@ public:
 	// isolateが外部からほしい場合
 	operator v8::Isolate*() const { return global_isolate; }
 
+	void printException(v8::Isolate* isolate, v8::TryCatch& tryCatch, std::string& printBuffer) {
+		auto message = tryCatch.Message();
+		if (message.IsEmpty()) return;
+		auto fileName();
+		// print {fileName}:line({line}):col({column begin}-{end}): {message}.
+		printBuffer
+			= from_v8<std::string>( isolate, message->GetScriptOrigin().ResourceName() )
+			+":line("+ std::to_string(message->GetLineNumber(isolate->GetCurrentContext()).FromJust() ) +")"
+			+":col("+ std::to_string(message->GetStartColumn()) +"-"+ std::to_string(message->GetEndColumn()) +")"
+			+": "+ from_v8<std::string>( isolate, as<v8::String>(tryCatch.Exception()) );
+	}
+
 	// v8文字列 の実行
-	bool execute(v8::Isolate* isolate, v8::Local<v8::String> source, v8::Local<v8::Value> name,
+	bool execute(v8::Isolate* isolate, v8::Local<v8::String> source, v8::Local<v8::Value> fileName,
 		std::string& printBuffer, bool doException = false) {
 		v8::HandleScope handleScope(isolate);
 		v8::TryCatch tryCatch(isolate);
-		v8::ScriptOrigin origin(name);
+		v8::ScriptOrigin origin(fileName);
 		v8::Local<v8::Context> context(isolate->GetCurrentContext());
 		v8::Local<v8::Script> script;
+		auto s = from_v8<std::string>(isolate, source);
 
 		if (!v8::Script::Compile(context, source, &origin).ToLocal(&script)) {
 			if (doException) {
 				// コンパイル中の例外をここで吐いたり処理したり
+			} else {
+				// とりあえずエラー内容だけ返却しとく
+				printException(isolate, tryCatch, printBuffer);
 			}
 			return false;
 		}
@@ -345,7 +366,10 @@ public:
 		v8::Local<v8::Value> result;
 		if (!script->Run(context).ToLocal(&result)) {
 			if (doException) {
-				// 実行中の例外をここで吐いたり処理したり
+				// コンパイル中の例外をここで吐いたり処理したり
+			} else {
+				// とりあえずエラー内容だけ返却しとく
+				printException(isolate, tryCatch, printBuffer);
 			}
 			return false;
 		}
@@ -357,18 +381,30 @@ public:
 		return true;
 	}
 
+	inline void replace_all(std::string& source, const std::string& from, const std::string& to) {
+		if (from.empty()) source;
+		size_t p = source.find(from);
+		while ( (p = source.find(from, p)) != std::string::npos ) {
+			source.replace(p, from.length(), to);
+			p += to.length();
+		}
+	}
 	// ファイルから v8文字列 の取得
-	v8::MaybeLocal<v8::String> read(v8::Isolate* isolate, const std::string& name) {
+	v8::MaybeLocal<v8::String> read(v8::Isolate* isolate, const std::string& fileName) {
 		v8::Local<v8::String> v8_source;
-		std::ifstream ifs(name);
+		std::ifstream ifs(fileName);
 		if (ifs.fail()) return v8::MaybeLocal<v8::String>();
 
-		std::string source;
-		ifs >> source;
+		std::string source( (std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>() );
+
+		// LFのみをCRLFにする (CRLFをLFにしてからCRLFにし直す)
+		// LFのみだと JavaScript側で Unexpected Error が起きたため
+		replace_all(source, { 0xD, 0xA }, { 0xA } );
+		replace_all(source, { 0xA }, { 0xD, 0xA });
 
 		return as<v8::String>(
-			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(name)))
-			);
+			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(fileName)))
+		);
 	}
 
 	// ソース の実行
@@ -388,9 +424,6 @@ public:
 		bool success = execute(global_isolate, v8_source, v8_fileName, result);
 		while (v8::platform::PumpMessageLoop(platform.get(), global_isolate));
 
-		if (!success) {
-			return "undefined";
-		}
 		return std::move(result);
 	}
 
