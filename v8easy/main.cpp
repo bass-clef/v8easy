@@ -33,6 +33,12 @@ bool enumNest(v8easy::array ary, int indent) {
 	return true;
 }
 
+enum BOOT_OPTION {
+	BO_INTERACTIVE = 0,
+	BO_ONELINE,
+	BO_FILE,
+	BO_USAGE,
+};
 int main(int argc, char* argv[]) {
 	v8easy js(argv[0]);
 	// case èoóÕ
@@ -79,20 +85,66 @@ int main(int argc, char* argv[]) {
 		enumNest(args.get(0), 1);
 	});
 
-	std::cout << "welcome v8 shell ver." << js.run("version();") << std::endl << ">";
-	
-	std::string source, line;
-	while(true) {
-		if (std::getline(std::cin, line)) {
-			source += line;
-		}
-		if (std::cin.eof()) {
-			if (source.empty()) break;
-			std::cout << "result:" << std::endl << js.run(source) << std::endl << ">";
+	auto js_run = [&js](std::string& source) {
+		if (source.empty()) return true;
+		std::cout << "result:" << std::endl << js.run(source) << std::endl << ">";
 
-			std::cin.clear();
-			source.clear();
+		std::cin.clear();
+		source.clear();
+		return false;
+	};
+
+	std::string source, file, line;
+	BOOT_OPTION bo = BO_INTERACTIVE;
+	if (1 < argc) {
+		++argv;
+		std::vector<std::string> args(argv, argv + argc - 1);
+		std::unordered_map<std::string, BOOT_OPTION> options{
+			{ "--interactive", BO_INTERACTIVE },
+			{ "--oneline" , BO_ONELINE },
+			{ "--include", BO_FILE },
+			{ "--usage", BO_USAGE },
+			{ "--help", BO_USAGE }
+		};
+
+		for (auto& param : args) {
+			try {
+				bo = options.at(param.data());
+				if (BO_USAGE == bo) {
+					std::cout << "v8 ver." << js.run("version();") << " usage list" << std::endl;
+					for (auto& option : options)
+						std::cout << option.first << std::endl;
+				}
+				continue;
+			} catch (std::out_of_range) {
+				if (bo != BO_ONELINE)
+					bo = BO_INTERACTIVE;
+			}
+
+			switch (bo) {
+			case BO_INTERACTIVE:
+			case BO_ONELINE:
+				source += param + " ";
+				break;
+			case BO_FILE:
+				file += param + " ";
+				break;
+			}
 		}
+		if (!file.empty())
+			std::cout << js.run("", file);
+		if (!source.empty())
+			std::cout << js.run(source, "");
+		if (bo != BO_INTERACTIVE)
+			return 0;
+	}
+
+	std::cout << "welcome v8 shell ver." << js.run("version();") << std::endl << ">";
+	while (true) {
+		if (std::getline(std::cin, line))
+			source += line;
+		if (std::cin.eof())
+			if (js_run(source)) break;
 	};
 
 	std::cout << "exit." << std::endl;

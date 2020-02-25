@@ -283,9 +283,9 @@ private:
 	 * v8::HandleScope が子クラスでしか new 初期化を許可してくれない(deleteが削除される)ので仕方なしにクラス
 	 */
 	class scopes {
+	public:
 		v8::Isolate::Scope isolate_scope;
 		v8::HandleScope handle_scope;
-	public:
 		scopes(v8::Isolate* isolate) : isolate_scope(isolate), handle_scope(isolate) {}
 	};
 
@@ -294,6 +294,7 @@ private:
 
 	v8::Isolate* global_isolate;
 	v8::Local<v8::ObjectTemplate> global_object;
+	v8::Local<v8::Context> global_context, run_context;
 	scopes* global_scopes;
 
 public:
@@ -313,6 +314,7 @@ public:
 		// isolate という仮想環境みたいなものを作らないと js が実行できないらしい、isolate はマルチ用に複数作成できる
 		create_params.array_buffer_allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
 		global_isolate = v8::Isolate::New(create_params);
+		global_isolate->Enter();
 
 		// スコープのスタックを作るとかなんとか(これは終了まで保持してないと駄目)
 		global_scopes = new scopes(global_isolate);
@@ -322,54 +324,105 @@ public:
 	}
 	~v8easy() {
 		delete global_scopes;
+		global_isolate->Exit();
 		global_isolate->Dispose();
 		v8::V8::Dispose();
 		v8::V8::ShutdownPlatform();
 		delete create_params.array_buffer_allocator;
 	}
 
+	inline void replace_all(std::string& source, const std::string& from, const std::string& to) {
+		if (from.empty()) source;
+		size_t p = source.find(from);
+		while ((p = source.find(from, p)) != std::string::npos) {
+			source.replace(p, from.length(), to);
+			p += to.length();
+		}
+	}
+
 	// isolateが外部からほしい場合
 	operator v8::Isolate*() const { return global_isolate; }
 
-	void printException(v8::Isolate* isolate, v8::TryCatch& tryCatch, std::string& printBuffer) {
+	void printException(v8::TryCatch& tryCatch, std::string& printBuffer) {
 		auto message = tryCatch.Message();
 		if (message.IsEmpty()) return;
 		auto fileName();
 		// print {fileName}:line({line}):col({column begin}-{end}): {message}.
 		printBuffer
-			= from_v8<std::string>( isolate, message->GetScriptOrigin().ResourceName() )
-			+":line("+ std::to_string(message->GetLineNumber(isolate->GetCurrentContext()).FromJust() ) +")"
+			= from_v8<std::string>(v8::Isolate::GetCurrent(), message->GetScriptOrigin().ResourceName() )
+			+":line("+ std::to_string(message->GetLineNumber(v8::Isolate::GetCurrent()->GetCurrentContext()).FromJust() ) +")"
 			+":col("+ std::to_string(message->GetStartColumn()) +"-"+ std::to_string(message->GetEndColumn()) +")"
-			+": "+ from_v8<std::string>( isolate, as<v8::String>(tryCatch.Exception()) );
+			+": "+ from_v8<std::string>(v8::Isolate::GetCurrent(), as<v8::String>(tryCatch.Exception()) );
+	}
+
+	void useContext(v8::Local<v8::Context>& context) {
+		// 実行/コンパイルする際にコンテキストが必要みたい。(これ毎回スコープと同じ感覚で作成するとメモリで圧迫死する)
+		// TODO:かつ C++側で global_object に貼り付ける前に作成して適用すると、
+		// C++側で作成したオブジェクトが見えなくなる(まだわからん)
+		if (context.IsEmpty()) {
+			context = v8::Context::New(global_isolate, nullptr, global_object);
+		}
+	}
+
+	// ファイルから v8文字列 の取得
+	v8::MaybeLocal<v8::String> read(const std::string& fileName) {
+		v8::Local<v8::String> v8_source;
+		std::ifstream ifs(fileName);
+		if (ifs.fail()) return v8::MaybeLocal<v8::String>();
+
+		std::string source((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+		// LFのみをCRLFにする (CRLFをLFにしてからCRLFにし直す)
+		// LFのみだと JavaScript側で Unexpected Error が起きたため
+		replace_all(source, { 0xD, 0xA }, { 0xA });
+		replace_all(source, { 0xA }, { 0xD, 0xA });
+
+		return as<v8::String>(
+			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(fileName)))
+			);
+	}
+
+	v8::Local<v8::Script> compile(std::string& printBuffer, const std::string& source, const std::string& fileName = "", bool doException = false) {
+		useContext(global_context);
+		v8::Local<v8::String> v8_source;
+		v8::Local<v8::String> v8_fileName = as<v8::String>(to_v8(global_isolate, fileName));
+		if (!read(fileName).ToLocal(&v8_source)) {
+			v8_source = as<v8::String>(to_v8(global_isolate, source));
+			v8_fileName = as<v8::String>(to_v8(global_isolate, "unnamed"));
+		}
+
+		v8::TryCatch tryCatch(global_isolate);
+		v8::ScriptOrigin origin(v8_fileName);
+		v8::Local<v8::Script> script;
+
+		if (!v8::Script::Compile(global_isolate->GetCurrentContext(), v8_source, &origin).ToLocal(&script)) {
+			if (doException) {
+				// コンパイル中の例外をここで吐いたり処理したり
+			} else {
+				// とりあえずエラー内容だけ返却しとく
+				printException(tryCatch, printBuffer);
+			}
+			return v8::Local<v8::Script>();
+		}
+
+		return std::move(script);
 	}
 
 	// v8文字列 の実行
-	bool execute(v8::Isolate* isolate, v8::Local<v8::String> source, v8::Local<v8::Value> fileName,
-		std::string& printBuffer, bool doException = false) {
-		v8::HandleScope handleScope(isolate);
-		v8::TryCatch tryCatch(isolate);
-		v8::ScriptOrigin origin(fileName);
-		v8::Local<v8::Context> context(isolate->GetCurrentContext());
-		v8::Local<v8::Script> script;
-		auto s = from_v8<std::string>(isolate, source);
+	bool execute(v8::Local<v8::Script> script, std::string& printBuffer, bool doException = false) {
+		if (script.IsEmpty()) return false;
+		useContext(global_context);
+		v8::Context::Scope context_scope(global_context);
+		v8::HandleScope handle_scope(global_context->GetIsolate());
 
-		if (!v8::Script::Compile(context, source, &origin).ToLocal(&script)) {
-			if (doException) {
-				// コンパイル中の例外をここで吐いたり処理したり
-			} else {
-				// とりあえずエラー内容だけ返却しとく
-				printException(isolate, tryCatch, printBuffer);
-			}
-			return false;
-		}
-
+		v8::TryCatch tryCatch(global_isolate);
 		v8::Local<v8::Value> result;
-		if (!script->Run(context).ToLocal(&result)) {
+		if (!script->Run(global_isolate->GetCurrentContext()).ToLocal(&result)) {
 			if (doException) {
 				// コンパイル中の例外をここで吐いたり処理したり
 			} else {
 				// とりあえずエラー内容だけ返却しとく
-				printException(isolate, tryCatch, printBuffer);
+				printException(tryCatch, printBuffer);
 			}
 			return false;
 		}
@@ -381,48 +434,17 @@ public:
 		return true;
 	}
 
-	inline void replace_all(std::string& source, const std::string& from, const std::string& to) {
-		if (from.empty()) source;
-		size_t p = source.find(from);
-		while ( (p = source.find(from, p)) != std::string::npos ) {
-			source.replace(p, from.length(), to);
-			p += to.length();
-		}
-	}
-	// ファイルから v8文字列 の取得
-	v8::MaybeLocal<v8::String> read(v8::Isolate* isolate, const std::string& fileName) {
-		v8::Local<v8::String> v8_source;
-		std::ifstream ifs(fileName);
-		if (ifs.fail()) return v8::MaybeLocal<v8::String>();
-
-		std::string source( (std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>() );
-
-		// LFのみをCRLFにする (CRLFをLFにしてからCRLFにし直す)
-		// LFのみだと JavaScript側で Unexpected Error が起きたため
-		replace_all(source, { 0xD, 0xA }, { 0xA } );
-		replace_all(source, { 0xA }, { 0xD, 0xA });
-
-		return as<v8::String>(
-			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(fileName)))
-		);
-	}
-
 	// ソース の実行
 	const std::string run(const std::string& source, const std::string& fileName = "") {
-		v8::Local<v8::Context> context = v8::Context::New(global_isolate, nullptr, global_object);
-		if (context.IsEmpty()) return "undefined";
-		v8::Context::Scope scope(context);
-
-		v8::Local<v8::String> v8_source;
-		v8::Local<v8::String> v8_fileName = as<v8::String>(to_v8(global_isolate, fileName));
-		if (!read(global_isolate, fileName).ToLocal(&v8_source)) {
-			v8_source = as<v8::String>(to_v8(global_isolate, source));
-			v8_fileName = as<v8::String>(to_v8(global_isolate, "unnamed"));
-		}
+		useContext(global_context);
+		v8::Context::Scope context_scope(global_context);
 
 		std::string result;
-		bool success = execute(global_isolate, v8_source, v8_fileName, result);
-		while (v8::platform::PumpMessageLoop(platform.get(), global_isolate));
+		v8::Local<v8::Script> script = compile(result, source, fileName);
+		bool success = execute(script, result);
+
+		while(v8::platform::PumpMessageLoop(platform.get(), global_isolate))
+			continue;
 
 		return std::move(result);
 	}
