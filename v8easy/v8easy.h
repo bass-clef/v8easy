@@ -366,19 +366,28 @@ public:
 
 	// ファイルから v8文字列 の取得
 	v8::MaybeLocal<v8::String> read(const std::string& fileName) {
+		std::string _fileName;
+		std::vector<char> ignores = {' ', '\"', '\''};
+		for (auto& ignore : ignores) {
+			if (ignore == fileName[0])
+				_fileName.assign(fileName.begin(), fileName.end() - 1);
+			if (ignore == fileName[fileName.length() - 1])
+				_fileName.assign(fileName.begin(), fileName.end() - 1);
+		}
+
 		v8::Local<v8::String> v8_source;
-		std::ifstream ifs(fileName);
-		if (ifs.fail()) return v8::MaybeLocal<v8::String>();
+		std::ifstream ifs(_fileName);
+		std::string source;
+		if (ifs.fail()) {
+			source = "not found file is '"+ _fileName +"'";
+		} else {
+			source.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+		}
 
-		std::string source((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-
-		// LFのみをCRLFにする (CRLFをLFにしてからCRLFにし直す)
-		// LFのみだと JavaScript側で Unexpected Error が起きたため
-		replace_all(source, { 0xD, 0xA }, { 0xA });
-		replace_all(source, { 0xA }, { 0xD, 0xA });
+		// fix:Unexpected の原因はこれではなかった
 
 		return as<v8::String>(
-			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(fileName)))
+			to_v8(global_isolate, source, static_cast<int>(std::filesystem::file_size(_fileName)))
 			);
 	}
 

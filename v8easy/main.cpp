@@ -117,8 +117,6 @@ int main(int argc, char* argv[]) {
 				}
 				continue;
 			} catch (std::out_of_range) {
-				if (bo != BO_ONELINE)
-					bo = BO_INTERACTIVE;
 			}
 
 			switch (bo) {
@@ -131,6 +129,7 @@ int main(int argc, char* argv[]) {
 				break;
 			}
 		}
+
 		if (!file.empty())
 			std::cout << js.run("", file);
 		if (!source.empty())
