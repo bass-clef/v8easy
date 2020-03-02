@@ -126,12 +126,15 @@ int main(int argc, char* argv[]) {
 				break;
 			case BO_FILE:
 				file += param + " ";
+				std::ifstream ifs(file);
+				if (!ifs.fail()) {
+					std::cout << js.run("", file) << std::endl;
+					file = "";
+				}
 				break;
 			}
 		}
 
-		if (!file.empty())
-			std::cout << js.run("", file);
 		if (!source.empty())
 			std::cout << js.run(source, "");
 		if (bo != BO_INTERACTIVE)
